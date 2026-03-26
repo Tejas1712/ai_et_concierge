@@ -16,9 +16,7 @@ class PersonaExtractor:
     Uses Gemini for structured output.
     """
 
-    def __init__(
-        self, api_key: Optional[str] = None, model: str = "gemini-2.5-flash-lite"
-    ):
+    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
         """
         Initialize PersonaExtractor with Gemini LLM.
 
@@ -28,6 +26,9 @@ class PersonaExtractor:
         """
         if api_key is None:
             api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+
+        if model is None:
+            model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
 
         if not api_key:
             raise ValueError("Neither GEMINI_API_KEY nor GOOGLE_API_KEY was provided")

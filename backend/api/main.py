@@ -14,6 +14,12 @@ from core.orchestrator import ConversationOrchestrator
 
 logger = logging.getLogger(__name__)
 
+# Ensure backend exceptions from orchestrator are visible in local terminal logs.
+logging.basicConfig(
+    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 
@@ -34,13 +40,15 @@ def _resolve_model_name() -> str:
 # Pydantic models for API
 class ChatRequest(BaseModel):
     """Request model for chat endpoint"""
+
     conversation_history: List[dict[str, Any]] = Field(
-        default_factory=list,
-        description="Previous messages in the conversation"
+        default_factory=list, description="Previous messages in the conversation"
     )
     current_message: str = Field(..., description="User's current message")
-    stream: bool = Field(default=False, description="Whether to stream the assistant response")
-    
+    stream: bool = Field(
+        default=False, description="Whether to stream the assistant response"
+    )
+
     model_config = {
         "json_schema_extra": {
             "example": {
@@ -57,19 +65,19 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     """Response model for chat endpoint"""
+
     response: str = Field(..., description="Assistant's response")
     turn_count: int = Field(..., description="Current conversation turn number")
     recommendations: Optional[List[dict[str, Any]]] = Field(
-        None,
-        description="Product recommendations if available"
+        None, description="Product recommendations if available"
     )
-    
+
     model_config = {
         "json_schema_extra": {
             "example": {
                 "response": "That sounds like a great goal! Tell me more...",
                 "turn_count": 1,
-                "recommendations": None
+                "recommendations": None,
             }
         }
     }
@@ -77,6 +85,7 @@ class ChatResponse(BaseModel):
 
 class CatalogResponse(BaseModel):
     """Response model for catalog endpoint"""
+
     products: List[dict[str, Any]] = Field(..., description="List of ET products")
     count: int = Field(..., description="Number of products")
 
@@ -85,7 +94,7 @@ class CatalogResponse(BaseModel):
 app = FastAPI(
     title="ET User Profiling Agent API",
     description="Conversation-based investment profiling agent using Gemini and LangChain",
-    version="1.0.0"
+    version="1.0.0",
 )
 
 # Add CORS middleware
@@ -119,44 +128,44 @@ async def health_check():
 async def chat(request: ChatRequest):
     """
     Process a conversation turn with the user.
-    
+
     Args:
         request: ChatRequest containing conversation history and current message
-        
+
     Returns:
         ChatResponse with assistant response and metadata
     """
     if not orchestrator:
         raise HTTPException(
             status_code=503,
-            detail="Orchestrator not initialized. API key may not be set."
+            detail="Orchestrator not initialized. API key may not be set.",
         )
-    
+
     # Validate request
     if not request.current_message or not request.current_message.strip():
-        raise HTTPException(
-            status_code=400,
-            detail="current_message cannot be empty"
-        )
-    
+        raise HTTPException(status_code=400, detail="current_message cannot be empty")
+
     try:
         orchestrator.sync_history(request.conversation_history)
 
         if request.stream:
+
             def token_stream():
                 for token in orchestrator.stream_turn(request.current_message):
                     yield token
 
-            return StreamingResponse(token_stream(), media_type="text/plain; charset=utf-8")
+            return StreamingResponse(
+                token_stream(), media_type="text/plain; charset=utf-8"
+            )
 
         payload = orchestrator.process_turn(request.current_message)
         return ChatResponse(**payload)
-    
+
     except Exception:
         logger.exception("Chat processing failed")
         raise HTTPException(
             status_code=500,
-            detail="Unable to process your request right now. Please try again."
+            detail="Unable to process your request right now. Please try again.",
         )
 
 
@@ -164,16 +173,13 @@ async def chat(request: ChatRequest):
 async def get_catalog():
     """
     Get the ET product catalog.
-    
+
     Returns:
         CatalogResponse with list of products
     """
     if not orchestrator or not orchestrator.products:
-        raise HTTPException(
-            status_code=503,
-            detail="Catalog not loaded"
-        )
-    
+        raise HTTPException(status_code=503, detail="Catalog not loaded")
+
     try:
         products_data = [
             {
@@ -194,17 +200,14 @@ async def get_catalog():
             }
             for prod in orchestrator.products
         ]
-        
-        return CatalogResponse(
-            products=products_data,
-            count=len(products_data)
-        )
-    
+
+        return CatalogResponse(products=products_data, count=len(products_data))
+
     except Exception:
         logger.exception("Catalog retrieval failed")
         raise HTTPException(
             status_code=500,
-            detail="Unable to retrieve catalog right now. Please try again."
+            detail="Unable to retrieve catalog right now. Please try again.",
         )
 
 
@@ -212,16 +215,13 @@ async def get_catalog():
 async def reset_conversation():
     """
     Reset the conversation state (for starting a new conversation).
-    
+
     Returns:
         Status message
     """
     if not orchestrator:
-        raise HTTPException(
-            status_code=503,
-            detail="Orchestrator not initialized"
-        )
-    
+        raise HTTPException(status_code=503, detail="Orchestrator not initialized")
+
     try:
         orchestrator.reset_conversation()
         return {"status": "success", "message": "Conversation reset"}
@@ -229,10 +229,11 @@ async def reset_conversation():
         logger.exception("Conversation reset failed")
         raise HTTPException(
             status_code=500,
-            detail="Unable to reset conversation right now. Please try again."
+            detail="Unable to reset conversation right now. Please try again.",
         )
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)

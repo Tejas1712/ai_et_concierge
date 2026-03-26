@@ -52,6 +52,8 @@ Simple command:
 python main.py
 ```
 
+If `backend/venv` exists and you started from a different Python, `main.py` automatically switches to the project venv interpreter first. If dependencies are still missing, it installs from `requirements.txt` and then starts the API.
+
 With auto-reload during development:
 
 ```bash

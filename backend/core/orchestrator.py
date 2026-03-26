@@ -33,10 +33,35 @@ class ConversationOrchestrator:
         "engineering",
     )
 
+    @staticmethod
+    def _friendly_llm_error_message(exc: Exception) -> str:
+        raw = str(exc).lower()
+
+        if "resource_exhausted" in raw or "quota" in raw or "429" in raw:
+            return (
+                "I could not generate a response right now because the Gemini API "
+                "quota is exhausted. Please retry later or use an API key/project "
+                "with available quota."
+            )
+
+        if "rate limit" in raw or "too many requests" in raw:
+            return (
+                "I am being rate-limited by the AI provider right now. "
+                "Please wait a few seconds and try again."
+            )
+
+        if "permission" in raw or "unauthorized" in raw or "api key" in raw:
+            return (
+                "I could not access the Gemini API. Please verify your API key "
+                "and permissions, then try again."
+            )
+
+        return "I apologize, but I ran into a temporary issue. Please try again."
+
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "gemini-2.5-flash-lite",
+        model: Optional[str] = None,
         catalog_path: Optional[str] = None,
     ):
         """
@@ -49,6 +74,9 @@ class ConversationOrchestrator:
         """
         if api_key is None:
             api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+
+        if model is None:
+            model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
 
         if not api_key:
             raise ValueError("Neither GEMINI_API_KEY nor GOOGLE_API_KEY was provided")
@@ -269,11 +297,9 @@ class ConversationOrchestrator:
         try:
             response = self.llm.invoke(system_prompt + f"\n\nUser: {user_message}")
             assistant_response = response.content.strip()
-        except Exception:
+        except Exception as exc:
             logger.exception("Failed to generate LLM response")
-            assistant_response = (
-                "I apologize, but I ran into a temporary issue. Please try again."
-            )
+            assistant_response = self._friendly_llm_error_message(exc)
 
         # Add assistant message to history
         assistant_msg = Message(role="assistant", content=assistant_response)
@@ -305,11 +331,9 @@ class ConversationOrchestrator:
                 text = str(content)
                 accumulated.append(text)
                 yield text
-        except Exception:
+        except Exception as exc:
             logger.exception("Failed to stream LLM response")
-            fallback = (
-                "I apologize, but I ran into a temporary issue. Please try again."
-            )
+            fallback = self._friendly_llm_error_message(exc)
             accumulated = [fallback]
             yield fallback
 
