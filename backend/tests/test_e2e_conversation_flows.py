@@ -3,12 +3,15 @@ from unittest.mock import MagicMock, patch
 
 from core.models import Persona, Product
 from core.orchestrator import ConversationOrchestrator
+from core.product_matcher import ProductMatcher
 
 
 def _build_orchestrator_for_e2e() -> ConversationOrchestrator:
     with patch.dict("os.environ", {"GOOGLE_API_KEY": "test-key"}):
         with patch("core.orchestrator.ChatGoogleGenerativeAI") as mock_orch_llm_class:
-            with patch("core.persona_extractor.ChatGoogleGenerativeAI") as mock_persona_llm_class:
+            with patch(
+                "core.persona_extractor.ChatGoogleGenerativeAI"
+            ) as mock_persona_llm_class:
                 with patch("core.orchestrator.CatalogLoader") as mock_catalog:
                     loader = MagicMock()
                     loader.load.return_value = [
@@ -128,7 +131,9 @@ def test_e2e_analyst_flow_includes_explanatory_product_details():
 
 def test_e2e_minimal_information_still_returns_safe_response():
     orch = _build_orchestrator_for_e2e()
-    orch.llm.invoke.return_value = MagicMock(content="Could you share your financial goals?")
+    orch.llm.invoke.return_value = MagicMock(
+        content="Could you share your financial goals?"
+    )
 
     empty_persona = Persona()
     with patch.object(orch, "_safe_extract_and_update", return_value=empty_persona):
@@ -141,7 +146,9 @@ def test_e2e_minimal_information_still_returns_safe_response():
 
 def test_e2e_verbose_input_preserves_flow_and_history():
     orch = _build_orchestrator_for_e2e()
-    orch.llm.invoke.return_value = MagicMock(content="Thanks, this gives me good context.")
+    orch.llm.invoke.return_value = MagicMock(
+        content="Thanks, this gives me good context."
+    )
 
     medium_persona = Persona(
         professional_background="Manager",
@@ -157,3 +164,48 @@ def test_e2e_verbose_input_preserves_flow_and_history():
     assert payload["turn_count"] == 1
     assert len(orch.get_conversation_history()) == 2
     assert orch.get_conversation_history()[0].content == long_message.strip()
+
+
+def test_e2e_ai_transition_student_prefers_masterclass():
+    orch = _build_orchestrator_for_e2e()
+    _install_dual_mode_llm(orch)
+
+    orch.products = [
+        Product(
+            id="et_masterclass",
+            name="ET Masterclass & Careers",
+            description="Expert-led courses and job market insights",
+            target_audience=["Students", "Early Career", "Upskillers"],
+            categories=["Masterclass", "Careers"],
+            core_benefit="Expert-led courses and career guidance",
+            trigger_keywords=["learn", "course", "upskill", "ai", "career"],
+            discovery_weight=9,
+        ),
+        Product(
+            id="et_markets",
+            name="ET Markets & Trading Hub",
+            description="Live data and portfolio tracking",
+            target_audience=["Traders"],
+            categories=["Markets", "Trading"],
+            core_benefit="Trading-oriented market tools",
+            trigger_keywords=["stocks", "nifty", "ipo"],
+            discovery_weight=5,
+        ),
+    ]
+    orch.product_matcher = ProductMatcher(orch.products)
+
+    persona = Persona(
+        professional_background="Final year engineering student",
+        learning_goals="Transition to AI development",
+        career_stage="Student",
+        transition_intent="Looking to transition into AI",
+        interests=["AI development", "Masterclass", "Career growth"],
+    )
+
+    with patch.object(orch, "_safe_extract_and_update", return_value=persona):
+        orch.process_turn("I am interested in learning AI development")
+        orch.process_turn("I am transitioning into this field")
+        payload = orch.process_turn("I would like masterclasses on ET")
+
+    ids = [item["id"] for item in payload["recommendations"] or []]
+    assert "et_masterclass" in ids

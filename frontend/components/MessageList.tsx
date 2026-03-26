@@ -17,7 +17,7 @@ export default function MessageList({ messages, isLoading }: MessageListProps) {
 
   return (
     <div className="chat-thread">
-      {messages.length === 0 && <p className="thread-empty">Start the conversation with your investment goals.</p>}
+      {messages.length === 0 && <p className="thread-empty">Start the conversation with your personal assistant</p>}
       {messages.map((msg, index) => (
         <div
           key={`${msg.role}-${index}`}

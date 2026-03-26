@@ -25,7 +25,7 @@ python -m venv venv
 venv\Scripts\activate
 ```
 
-3. Install dependencies.
+3. Install dependencies (latest compatible versions from `requirements.txt`).
 
 ```bash
 pip install -r requirements.txt
@@ -46,6 +46,20 @@ Recommended values:
 - `CORS_ORIGINS=http://localhost:3000`
 
 ## Run
+Simple command:
+
+```bash
+python main.py
+```
+
+With auto-reload during development:
+
+```bash
+python main.py --reload
+```
+
+Equivalent explicit uvicorn command:
+
 ```bash
 venv\Scripts\python -m uvicorn --app-dir . api.main:app --host 127.0.0.1 --port 8000
 ```
