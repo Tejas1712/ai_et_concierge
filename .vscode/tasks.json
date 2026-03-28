@@ -1,0 +1,76 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Setup Backend",
+      "type": "shell",
+      "command": "if (-not (Test-Path 'backend/venv')) { python -m venv backend/venv }; & 'backend/venv/Scripts/python.exe' -m pip install -r backend/requirements.txt; if (-not (Test-Path 'backend/.env') -and (Test-Path 'backend/.env.example')) { Copy-Item 'backend/.env.example' 'backend/.env' }",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Setup Frontend",
+      "type": "shell",
+      "command": "Set-Location frontend; npm install; if (-not (Test-Path '.env') -and (Test-Path '.env.example')) { Copy-Item '.env.example' '.env' }",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run Backend (Integrated Terminal)",
+      "type": "shell",
+      "command": "Set-Location backend; & './venv/Scripts/python.exe' main.py",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "dependsOn": [
+        "Setup Backend"
+      ],
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "et-run"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run Frontend (Integrated Terminal)",
+      "type": "shell",
+      "command": "Set-Location frontend; npm run dev",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "dependsOn": [
+        "Setup Frontend"
+      ],
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "et-run"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run Full Stack (VS Code Integrated)",
+      "dependsOrder": "parallel",
+      "dependsOn": [
+        "Run Backend (Integrated Terminal)",
+        "Run Frontend (Integrated Terminal)"
+      ],
+      "problemMatcher": []
+    }
+  ]
+}
