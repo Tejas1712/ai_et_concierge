@@ -1,8 +1,11 @@
 import logging
 import os
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any, List, Optional
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
 from core.models import Persona, Product, Message
 from core.catalog import CatalogLoader
 from core.persona_extractor import PersonaExtractor
@@ -61,6 +64,7 @@ class ConversationOrchestrator:
     def __init__(
         self,
         api_key: Optional[str] = None,
+        groq_api_key: Optional[str] = None,
         model: Optional[str] = None,
         catalog_path: Optional[str] = None,
     ):
@@ -69,11 +73,15 @@ class ConversationOrchestrator:
 
         Args:
             api_key: Google API key for Gemini
+            groq_api_key: API key for Groq (Llama 3 persona extraction)
             model: Model name to use
             catalog_path: Path to ET catalog JSON
         """
         if api_key is None:
             api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+
+        if groq_api_key is None:
+            groq_api_key = os.getenv("GROQ_API_KEY")
 
         if model is None:
             model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
@@ -81,7 +89,7 @@ class ConversationOrchestrator:
         if not api_key:
             raise ValueError("Neither GEMINI_API_KEY nor GOOGLE_API_KEY was provided")
 
-        # Initialize LLM
+        # Initialize main synthesis LLM (Gemini)
         self.llm = ChatGoogleGenerativeAI(
             model=model, google_api_key=api_key, temperature=0.7
         )
@@ -95,8 +103,27 @@ class ConversationOrchestrator:
             self.products = []
 
         # Initialize extractors
-        self.persona_extractor = PersonaExtractor(api_key=api_key, model=model)
-        self.product_matcher = ProductMatcher(self.products)
+        # Persona extraction uses Groq (Llama 3); Product matching uses Gemini embeddings (RAG)
+        self.persona_extractor = PersonaExtractor(groq_api_key=groq_api_key)
+        self.product_matcher = ProductMatcher(self.products, api_key=api_key)
+
+        # Initialize RAG retriever from saved FAISS vectorstore
+        self.retriever = None
+        try:
+            vectorstore_path = Path(__file__).parent.parent / "data" / "vectorstore"
+            if vectorstore_path.exists():
+                embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+                vectorstore = FAISS.load_local(
+                    str(vectorstore_path),
+                    embeddings,
+                    allow_dangerous_deserialization=True
+                )
+                self.retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+                logger.info("RAG retriever initialized successfully")
+            else:
+                logger.warning("Vectorstore not found. Run ingest.py to enable RAG.")
+        except Exception as e:
+            logger.warning("Failed to initialize RAG retriever: %s", str(e))
 
         # Conversation state
         self.conversation_history: List[Message] = []
@@ -128,7 +155,12 @@ class ConversationOrchestrator:
 
     def _finalize_recommendations(self, assistant_response: str) -> str:
         """Apply recommendation logic after a response is generated."""
+        # Strict gate — only recommend after turn 3 AND persona is sufficient
         if self.turn_count < 3:
+            return assistant_response
+
+        # Only recommend once per conversation (avoid repeating every turn)
+        if self.recommendations:
             return assistant_response
 
         self.recommendations = self.product_matcher.match(self.current_persona)
@@ -271,6 +303,65 @@ class ConversationOrchestrator:
 
         self.current_persona.interests = interests
 
+    def _strip_early_recommendations(self, response: str) -> str:
+        """
+        Programmatically remove any recommendation/resource lists
+        from the response before turn 3. Hard code-level gate.
+        """
+        if self.turn_count >= 3:
+            return response
+
+        # Broad trigger phrases — any line containing these gets cut
+        trigger_phrases = [
+            "here are",
+            "i recommend",
+            "check out",
+            "you might want to explore",
+            "here's what i suggest",
+            "based on your interest",
+            "for guidance on",
+            "also, explore",
+            "you can explore",
+            "some options",
+            "my top",
+            "top recommendation",
+            "these platform",
+            "this platform",
+            "will equip you",
+            "perfect for you",
+            "ideal for",
+            "offers expert",
+            "* ",   # bullet points with asterisk
+            "1.",   # numbered lists
+            "2.",
+            "3.",
+        ]
+
+        lines = response.split("\n")
+        clean_lines = []
+        cutting = False
+
+        for line in lines:
+            lower = line.lower().strip()
+            # Once we start cutting, stop adding lines
+            if any(phrase in lower for phrase in trigger_phrases):
+                cutting = True
+            if not cutting:
+                clean_lines.append(line)
+
+        result = "\n".join(clean_lines).strip()
+
+        # If nothing left, keep only first paragraph
+        if not result:
+            paragraphs = response.split("\n\n")
+            result = paragraphs[0].strip() if paragraphs else response
+
+        # Append a focused follow-up question if response got truncated
+        if result != response.strip():
+            result += "\n\nWhat specific aspect would you like to focus on first?"
+
+        return result
+
     def process_turn(self, user_message: str) -> dict[str, Any]:
         """
         Process a single conversation turn.
@@ -293,12 +384,11 @@ class ConversationOrchestrator:
         self._apply_intent_enrichment()
 
         # Build system prompt with context
-        system_prompt = self.inject_system_prompt()
-
-        # Generate assistant response
+        system_prompt = self.inject_system_prompt(user_message)
         try:
             response = self.llm.invoke(system_prompt + f"\n\nUser: {user_message}")
             assistant_response = response.content.strip()
+            assistant_response = self._strip_early_recommendations(assistant_response)
         except Exception as exc:
             logger.exception("Failed to generate LLM response")
             assistant_response = self._friendly_llm_error_message(exc)
@@ -322,15 +412,33 @@ class ConversationOrchestrator:
         self.current_persona = self._safe_extract_and_update(self.conversation_history)
         self._apply_intent_enrichment()
 
-        system_prompt = self.inject_system_prompt()
+        system_prompt = self.inject_system_prompt(user_message)
         accumulated: List[str] = []
+        stop_streaming = False  # Hard stop after first question mark in early turns
 
         try:
             for chunk in self.llm.stream(system_prompt + f"\n\nUser: {user_message}"):
                 content = getattr(chunk, "content", "")
-                if not content:
+                if not content or stop_streaming:
                     continue
                 text = str(content)
+
+                # In early turns, stop streaming as soon as we've emitted a complete question
+                if self.turn_count < 3:
+                    combined = "".join(accumulated) + text
+                    if "?" in combined:
+                        # Emit only up to and including the first "?"
+                        cut = combined.index("?") + 1
+                        emit = combined[:cut]
+                        # Only yield the new portion
+                        already_emitted = len("".join(accumulated))
+                        new_portion = emit[already_emitted:]
+                        if new_portion:
+                            accumulated.append(new_portion)
+                            yield new_portion
+                        stop_streaming = True
+                        continue
+
                 accumulated.append(text)
                 yield text
         except Exception as exc:
@@ -340,12 +448,14 @@ class ConversationOrchestrator:
             yield fallback
 
         assistant_response = "".join(accumulated).strip()
+        # Apply strip filter as a secondary safety net
+        assistant_response = self._strip_early_recommendations(assistant_response)
         assistant_response = self._finalize_recommendations(assistant_response)
 
         # If recommendation block was appended, stream the appended segment too.
         streamed_base = "".join(accumulated).strip()
         if assistant_response != streamed_base:
-            suffix = assistant_response[len(streamed_base) :]
+            suffix = assistant_response[len(streamed_base):]
             if suffix:
                 yield suffix
 
@@ -355,34 +465,120 @@ class ConversationOrchestrator:
 
         yield "\n<<END_OF_STREAM>>\n"
 
-    def inject_system_prompt(self) -> str:
+    def _get_tone_instructions(self) -> str:
+        """Return adaptive tone instructions based on detected user persona."""
+        career_stage = (self.current_persona.career_stage or "").lower()
+        risk_appetite = (self.current_persona.risk_appetite or "").lower()
+        background = (self.current_persona.professional_background or "").lower()
+        transition = (self.current_persona.transition_intent or "").lower()
+
+        # Student / Early career → encouraging & motivational
+        if any(k in career_stage for k in ["student", "early", "fresher", "graduate"]) or \
+           any(k in transition for k in ["student", "fresher", "entry"]):
+            return (
+                "Tone: Encouraging, motivational, and supportive. "
+                "Use simple language. Acknowledge their ambition and guide them step by step. "
+                "Celebrate their goals and make them feel confident about their journey."
+            )
+
+        # Trader / Aggressive investor → direct & fast-paced
+        if risk_appetite == "aggressive" or \
+           any(k in background for k in ["trader", "broker", "analyst", "fund"]):
+            return (
+                "Tone: Direct, fast-paced, and data-driven. "
+                "Skip pleasantries. Lead with numbers, insights, and actionable recommendations. "
+                "The user values efficiency and precision above all."
+            )
+
+        # Conservative / Retiree → calm & reassuring
+        if risk_appetite == "conservative" or \
+           any(k in career_stage for k in ["retire", "senior"]):
+            return (
+                "Tone: Calm, reassuring, and careful. "
+                "Emphasize safety, stability, and long-term reliability. "
+                "Avoid jargon. Build trust with clear, measured explanations."
+            )
+
+        # Professional / Executive → peer-level & data-driven
+        if any(k in background for k in ["manager", "executive", "director", "founder", "ceo", "engineer", "professional"]):
+            return (
+                "Tone: Peer-level, professional, and data-driven. "
+                "Speak as a knowledgeable colleague. Use industry terminology appropriately. "
+                "Be concise and respect their time — lead with insights, not basics."
+            )
+
+        # Default → professional & formal
+        return (
+            "Tone: Professional, formal, and courteous. "
+            "Be clear and structured in your responses. "
+            "Maintain a helpful yet authoritative presence."
+        )
+
+    def inject_system_prompt(self, user_message: str = "") -> str:
         """
         Build the system prompt with catalog and persona context.
 
         Returns:
             Full system prompt with context
         """
-        base_prompt = """
-    You are an ET ecosystem concierge assistant.
+        tone_instructions = self._get_tone_instructions()
+
+        if self.turn_count < 3:
+            turn_instruction = (
+                f"\n    CURRENT TURN: {self.turn_count} of 3 (information gathering phase).\n"
+                "    YOUR ONLY JOB RIGHT NOW: Ask exactly ONE short, focused clarifying question.\n"
+                "    OUTPUT FORMAT: One question. Nothing else. No lists. No suggestions. No products.\n"
+                "    STOP after the question mark. Do not add any recommendations, resources, or examples.\n"
+                "    Any output beyond a single question is a violation of your instructions."
+            )
+        else:
+            turn_instruction = (
+                f"\n    CURRENT TURN: {self.turn_count}. "
+                "You may now provide tailored recommendations based on the persona you have gathered."
+            )
+
+        base_prompt = f"""
+    You are AlphaAssist, the official ET ecosystem concierge.
     Your goal is to understand user intent and guide them to the right ET offerings.
     User intent may include learning/career growth, market tracking, wealth planning, enterprise insights, or lifestyle content.
 
+    Identity:
+    - Your name is AlphaAssist.
+    - You represent the Economic Times ecosystem.
+    - Always introduce yourself as AlphaAssist on the very first message only.
+
+    {tone_instructions}
+
     Important behavior rules:
     - Prioritize the user's most recent and strongest stated intent above everything else.
-    - Keep the main answer focused on that intent in 2-4 lines before any extras.
-    - If mentioning other ET offerings, add at most one short secondary suggestion.
-    - If user asks for markets/stocks, keep focus on markets first and avoid long lifestyle detours.
+    - If user asks for markets/stocks, keep focus on markets first.
     - If the user asks for learning, courses, AI development, career transition, or masterclasses, prioritize ET Masterclass and career-oriented guidance.
     - Do not force investment-first questions when the user intent is clearly learning/career oriented.
-    - Ask one focused follow-up question at a time and keep responses concise, friendly, and practical.
+    {turn_instruction}
     """
 
-        # Add catalog context
-        if self.products:
-            catalog_text = "\n\nAvailable ET Products:\n"
-            for product in self.products[:3]:  # Include first 3 products as examples
-                catalog_text += f"- {product.name}: {product.core_benefit}\n"
-            base_prompt += catalog_text
+        # Only inject RAG and catalog context AFTER turn 3 — before that it causes the LLM to leak products
+        if self.turn_count >= 3:
+            # Add RAG context based on user message
+            if self.retriever and user_message:
+                try:
+                    rag_docs = self.retriever.invoke(user_message)
+                    if rag_docs:
+                        rag_context = "\n\nRelevant ET Products (from knowledge base):\n"
+                        for doc in rag_docs:
+                            rag_context += f"- {doc.page_content}\n"
+                        base_prompt += rag_context
+                        logger.info("RAG Query: %s", user_message)
+                        logger.info("RAG Matches: %d documents retrieved", len(rag_docs))
+                except Exception as e:
+                    logger.warning("RAG retrieval failed: %s", str(e))
+
+            # Add catalog context
+            if self.products:
+                catalog_text = "\n\nAvailable ET Products:\n"
+                for product in self.products[:3]:
+                    catalog_text += f"- {product.name}: {product.core_benefit}\n"
+                base_prompt += catalog_text
 
         # Add current persona context if extracted
         if (
