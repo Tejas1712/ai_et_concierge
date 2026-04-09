@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import MessageList from "./MessageList";
+import AlphaAvatar, { getPersonaType } from "./AlphaAvatar";
 import type { Message } from "../lib/types";
 
 const END_MARKER = "<<END_OF_STREAM>>";
@@ -70,6 +71,7 @@ export default function ChatInterface() {
   const [isAuthLoading, setIsAuthLoading] = useState(false);
   const [historyMode, setHistoryMode] = useState<"server" | "local">("local");
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [personaData, setPersonaData] = useState<{ careerStage?: string; riskAppetite?: string; background?: string }>({});
 
   const apiBase = useMemo(() => process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000", []);
 
@@ -636,6 +638,16 @@ export default function ChatInterface() {
             </div>
             <h1>ET User Profiling Agent</h1>
             <p className="subtitle">Answer a few focused questions and get tailored ET recommendations.</p>
+
+            {/* AlphaAssist Avatar Profile */}
+            <div className="alpha-profile">
+              <AlphaAvatar
+                persona={getPersonaType(personaData.careerStage, personaData.riskAppetite, personaData.background)}
+                size={72}
+                showName={true}
+              />
+              <p className="alpha-tagline">Your personalised ET concierge</p>
+            </div>
             {!authToken && (
               <button
                 type="button"
@@ -650,7 +662,11 @@ export default function ChatInterface() {
             )}
           </div>
 
-          <MessageList messages={messages} isLoading={isLoading} />
+          <MessageList
+            messages={messages}
+            isLoading={isLoading}
+            personaType={getPersonaType(personaData.careerStage, personaData.riskAppetite, personaData.background)}
+          />
 
           <form onSubmit={submitMessage} className="composer">
             <input
