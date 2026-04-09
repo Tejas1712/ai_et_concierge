@@ -3,41 +3,38 @@ import logging
 import os
 import re
 from typing import Any, List, Optional
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
 from core.models import Persona, Message
 
-
 logger = logging.getLogger(__name__)
-
 
 class PersonaExtractor:
     """
     Extracts and maintains user personas from conversation history using LLM.
-    Uses Gemini for structured output.
+    Uses Groq (Llama 3) for high-speed structured extraction.
     """
 
-    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
+    def __init__(self, groq_api_key: Optional[str] = None, model: str = "llama-3.3-70b-versatile"):
         """
-        Initialize PersonaExtractor with Gemini LLM.
+        Initialize PersonaExtractor with Groq LLM.
 
         Args:
-            api_key: Google API key. If None, uses GEMINI_API_KEY then GOOGLE_API_KEY
-            model: Model name to use (default: gemini-2.5-flash-lite)
+            groq_api_key: API key for Groq. If None, uses GROQ_API_KEY environment variable.
+            model: Groq model name to use.
         """
-        if api_key is None:
-            api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        if groq_api_key is None:
+            groq_api_key = os.getenv("GROQ_API_KEY")
 
-        if model is None:
-            model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
-
-        if not api_key:
-            raise ValueError("Neither GEMINI_API_KEY nor GOOGLE_API_KEY was provided")
-
-        self.llm = ChatGoogleGenerativeAI(
-            model=model,
-            google_api_key=api_key,
-            temperature=0.2,
-        )
+        if not groq_api_key:
+            logger.warning("GROQ_API_KEY was not provided. Persona extraction will return defaults.")
+            self.llm = None
+        else:
+            self.llm = ChatGroq(
+                model_name=model,
+                groq_api_key=groq_api_key,
+                temperature=0.2,
+            )
+            
         self.current_persona = Persona()
         self.conversation_history: List[Message] = []
 
