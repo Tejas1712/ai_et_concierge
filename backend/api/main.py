@@ -58,6 +58,10 @@ def _resolve_api_key() -> Optional[str]:
     return os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
 
+def _resolve_groq_api_key() -> Optional[str]:
+    return os.getenv("GROQ_API_KEY")
+
+
 def _resolve_cors_origins() -> list[str]:
     raw_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000")
     origins = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
@@ -251,49 +255,74 @@ app.add_middleware(
 try:
     orchestrator = ConversationOrchestrator(
         api_key=_resolve_api_key(),
+        groq_api_key=_resolve_groq_api_key(),
         model=_resolve_model_name(),
         catalog_path=os.getenv("CATALOG_PATH"),
     )
+except ValueError as e:
+    logger.error("Orchestrator config error (missing API key?): %s", str(e))
+    orchestrator = None
 except Exception as e:
-    print(f"Warning: Failed to initialize orchestrator: {str(e)}")
+    logger.error("Failed to initialize orchestrator: %s", str(e))
     orchestrator = None
 
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    return {"status": "ok", "message": "API is running"}
+    return {
+        "status": "ok",
+        "orchestrator": "ready" if orchestrator else "unavailable",
+        "catalog_loaded": bool(orchestrator and orchestrator.products),
+        "rag_enabled": bool(orchestrator and orchestrator.retriever),
+    }
 
 
 @app.post("/api/auth/signup", response_model=AuthTokenResponse)
 async def signup(payload: SignupRequest, db: Session = Depends(get_db)):
-    email = payload.email.strip().lower()
-    if get_user_by_email(db, email):
-        raise HTTPException(status_code=409, detail="Email already registered")
-
     try:
+        email = payload.email.strip().lower()
+        if not email or "@" not in email:
+            raise HTTPException(status_code=400, detail="Invalid email address")
+
+        if get_user_by_email(db, email):
+            raise HTTPException(status_code=409, detail="Email already registered")
+
         user = create_user(
             db,
             email=email,
             password_hash=hash_password(payload.password),
             full_name=(payload.full_name or "").strip() or None,
         )
+        token = create_access_token(user.id)
+        return AuthTokenResponse(access_token=token, user_id=user.id, email=user.email)
+    except HTTPException:
+        raise
     except IntegrityError:
         raise HTTPException(status_code=409, detail="Email already registered")
-
-    token = create_access_token(user.id)
-    return AuthTokenResponse(access_token=token, user_id=user.id, email=user.email)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.exception("Signup failed")
+        raise HTTPException(status_code=500, detail="Signup failed. Please try again.")
 
 
 @app.post("/api/auth/login", response_model=AuthTokenResponse)
 async def login(payload: LoginRequest, db: Session = Depends(get_db)):
-    email = payload.email.strip().lower()
-    user = get_user_by_email(db, email)
-    if not user or not verify_password(payload.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-
-    token = create_access_token(user.id)
-    return AuthTokenResponse(access_token=token, user_id=user.id, email=user.email)
+    try:
+        email = payload.email.strip().lower()
+        user = get_user_by_email(db, email)
+        if not user or not verify_password(payload.password, user.password_hash):
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+        token = create_access_token(user.id)
+        return AuthTokenResponse(access_token=token, user_id=user.id, email=user.email)
+    except HTTPException:
+        raise
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception:
+        logger.exception("Login failed")
+        raise HTTPException(status_code=500, detail="Login failed. Please try again.")
 
 
 @app.post("/api/chat", response_model=ChatResponse)
