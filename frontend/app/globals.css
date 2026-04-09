@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=DM+Sans:wght@400;500;600;700&display=swap');
+
 * {
   box-sizing: border-box;
 }
@@ -23,7 +25,7 @@ body {
 body {
   min-height: 100vh;
   color: var(--text-primary);
-  font-family: "Merriweather Sans", "Helvetica Neue", "Segoe UI", sans-serif;
+  font-family: "Inter", "DM Sans", "Helvetica Neue", "Segoe UI", sans-serif;
   background:
     linear-gradient(180deg, #ffffff 0%, #fbfbfb 100%);
 }
@@ -601,6 +603,41 @@ body {
   .meta-chip.user {
     max-width: 140px;
   }
+}
+
+/* ── AlphaAssist Avatar ─────────────────────────────────────────────────── */
+.alpha-profile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin: 16px 0 8px;
+}
+
+.alpha-tagline {
+  margin: 0;
+  font-size: 0.75rem;
+  color: #888;
+  letter-spacing: 0.03em;
+}
+
+.bubble-assistant {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-right: auto;
+  background: #fff;
+  border: 1px solid #e6e6e6;
+}
+
+.bubble-avatar {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.bubble-body {
+  flex: 1;
+  min-width: 0;
 }
 
 @keyframes fade-in {
